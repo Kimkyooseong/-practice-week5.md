@@ -330,3 +330,100 @@ if __name__ == "__main__":
 이 기획에서 적을 터뜨렸을 때 나오는 '파편'을 무기 업그레이드 아이템으로 쓰게 만드는 것이 마음에 드시나요, 아니면 파편 자체가 다른 적을 연쇄적으로 부수는 폭탄 같은 역할이 되는 것이 더 끌리시나요?
     pygame.quit()
     sys.exit()
+내가 기획한 게임에서 [차별점] 기능을 구현하려면 Pygame 코드에서 어떤 부분을
+어떻게 수정해야 해? 수정이 어려운 부분이 있으면 미리 알려줘.
+'박살'의 핵심 재미 요소인 **[파편 연쇄 폭발]**과 **[무기 강화 조각]** 시스템을 현재 코드에 넣으려면 꽤 흥미로운 작업들이 필요합니다. 
+
+기존 코드가 딕셔너리(`{}`) 형태로 적을 관리하도록 업그레이드되었기 때문에, 파편 시스템을 추가하는 것 자체는 어렵지 않습니다. 하지만 몇 가지 주의해야 할 점도 함께 존재합니다. 어떻게 수정해야 하는지, 그리고 어떤 부분이 까다로울 수 있는지 짚어드릴게요.
+
+---
+
+### 🛠️ 구현을 위한 핵심 수정 포인트 4가지
+
+#### 1. 수학 모듈 추가 및 파편/아이템 리스트 생성
+파편이 사방(360도)으로 퍼져나가게 하려면 삼각함수(sin, cos)가 필요합니다. 또한 파편과 아이템을 관리할 빈 리스트와 무기 레벨 변수가 필요합니다.
+```python
+import math # 맨 위에 추가
+
+# main() 함수 내부 변수 초기화 부분
+shrapnels = [] # 적을 공격하는 파편
+items = []     # 플레이어 무기 강화 조각
+weapon_level = 1 # 무기 레벨 (최대 3~5)
+```
+
+#### 2. 파편 생성 함수 만들기 (`main` 밖)
+적이 죽은 위치(x, y)를 받아서 여러 개의 파편을 흩뿌리는 함수를 만들어야 합니다.
+```python
+def spawn_shrapnels(x, y, count, is_boss=False):
+    new_shrapnels = []
+    new_items = []
+    
+    for i in range(count):
+        angle = random.uniform(0, math.pi * 2) # 0~360도 랜덤 방향
+        speed = random.uniform(3, 7)
+        vx = math.cos(angle) * speed
+        vy = math.sin(angle) * speed
+        
+        # 10% 확률로 공격용 파편 대신 강화 아이템 생성
+        if random.random() < 0.1:
+            new_items.append({"rect": pygame.Rect(x, y, 10, 10), "vx": vx, "vy": vy})
+        else:
+            new_shrapnels.append({"rect": pygame.Rect(x, y, 6, 6), "vx": vx, "vy": vy, "life": 60}) # life는 파편 생존 시간(프레임)
+            
+    return new_shrapnels, new_items
+```
+
+#### 3. 적 사망 로직 수정 (연쇄 폭발의 시작)
+기존에 총알에 맞아 적의 `hp`가 0이 되면 점수만 올리고 끝났지만, 이제 여기서 방금 만든 `spawn_shrapnels` 함수를 호출해야 합니다.
+```python
+# 체력이 0 이하인 적 처리 부분 수정
+surviving_enemies = []
+for en in enemies:
+    if en["hp"] <= 0:
+        # 적 종류에 따라 파편 갯수 다르게 설정
+        drop_count = 20 if en["type"] == "boss" else 5
+        
+        # 파편과 아이템 생성 후 리스트에 추가
+        new_s, new_i = spawn_shrapnels(en["rect"].centerx, en["rect"].centery, drop_count)
+        shrapnels.extend(new_s)
+        items.extend(new_i)
+        
+        # (기존 점수 획득 로직 유지)
+    else:
+        surviving_enemies.append(en)
+enemies = surviving_enemies
+```
+
+#### 4. 파편 이동 및 연쇄 충돌 판정 (가장 중요)
+메인 루프 안에서 파편들을 이동시키고, **파편이 다른 적과 부딪혔는지** 확인하는 코드가 필요합니다.
+```python
+# 파편 이동 및 적 충돌 로직
+alive_shrapnels = []
+for s in shrapnels:
+    s["rect"].x += s["vx"]
+    s["rect"].y += s["vy"]
+    s["life"] -= 1
+    
+    hit_something = False
+    for en in enemies:
+        if s["rect"].colliderect(en["rect"]):
+            en["hp"] -= 1 # 파편에 맞아도 체력 감소! (연쇄 폭발)
+            hit_something = True
+            break
+            
+    if not hit_something and s["life"] > 0 and 0 < s["rect"].x < WIDTH and 0 < s["rect"].y < HEIGHT:
+        alive_shrapnels.append(s)
+shrapnels = alive_shrapnels
+```
+
+---
+
+### ⚠️ 미리 알아두어야 할 "어려운 점 (리스크)"
+
+1. **프레임 드랍 (최적화 문제)**
+   * **원인:** 화면에 적이 10마리가 있는데, 연쇄 폭발이 일어나 파편이 50개 생성되었다고 가정해 봅시다. 매 프레임마다 파편 50개와 적 10마리의 충돌을 일일이 계산해야 합니다. 운이 나빠 화면 전체가 폭발하면 파편이 수백 개로 늘어나 컴퓨터가 버벅거릴(렉이 걸릴) 수 있습니다.
+   * **해결책:** 파편의 개수를 적당히 제한하거나, 파편의 생존 시간(`life`)을 짧게 주어 화면 밖으로 나가기 전에 스스로 소멸하게 만들어야 합니다.
+2. **무기 레벨업 시스템 (다중 발사)**
+   * **원인:** 아이템을 먹고 `weapon_level`이 올랐을 때, 스페이스바를 누르면 총알이 일직선으로 1발 나가는 게 아니라 부채꼴 모양으로 3발, 5발씩 나가게 수학(각도) 계산을 넣어야 합니다. 이 부분의 코드가 조금 복잡해질 수 있습니다.
+
+파편 연쇄 폭발을 우선적으로 구현해 볼까요, 아니면 플레이어의 무기가 다방향으로 나가는 다중 발사 기능을 먼저 구현해 볼까요?
